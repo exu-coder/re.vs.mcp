@@ -2,11 +2,10 @@ import os
 import mimetypes
 import secrets
 import hmac
-import json
 import contextlib
 import anyio
 from pathlib import Path
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -14,8 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# MCP imports
-from mcp.server.fastmcp import FastMCP, Context
+# MCP imports (v1 — FastMCP)
+from mcp.server.fastmcp import FastMCP
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 # ---------- config ----------
@@ -279,7 +278,7 @@ def delete(req: DeleteReq):
 
 
 # ============================================================
-# MCP SERVER — tools that talk to storage directly
+# MCP SERVER — tools
 # ============================================================
 mcp = FastMCP("jarvis-storage")
 
@@ -371,11 +370,13 @@ def storage_resource(path: str) -> str:
 
 
 # ============================================================
-# Mount MCP at /mcp (Streamable HTTP)
+# Mount MCP at /mcp
 # ============================================================
+# json_response=True → replies with plain JSON, so clients that only
+# send `Accept: application/json` work (fixes -32600 "Not Acceptable").
 session_manager = StreamableHTTPSessionManager(
     app=mcp._mcp_server,
-    json_response=False,
+    json_response=True,
     stateless=True,
 )
 
@@ -391,8 +392,14 @@ app.router.lifespan_context = lifespan
 
 @app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
 async def mcp_endpoint(request: Request):
-    """MCP Streamable HTTP endpoint."""
-    return await session_manager.handle_request(request.scope, request.receive, request._send)
+    """MCP endpoint. Accepts application/json (json_response=True)."""
+    # Inject Accept header if the client didn't send one — some MCP
+    # probes/tools only set Content-Type. Prevents -32600 Not Acceptable.
+    scope = dict(request.scope)
+    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() != b"accept"]
+    headers.append((b"accept", b"application/json"))
+    scope["headers"] = headers
+    return await session_manager.handle_request(scope, request.receive, request._send)
 
 
 # ============================================================
